@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dragonwall: Co-op Castle Defence</title>
+<style>
+:root{--night:#161a26;--stone:#2a2f3f;--torch:#e8a33d;--bone:#f0e6d0;--ember:#c4402a}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:radial-gradient(circle at 50% 120%,#3a2a3a,#161a26 70%);color:var(--bone);font:16px/1.5 Palatino,"Palatino Linotype",Georgia,serif}
+canvas{display:block;position:fixed;inset:0;cursor:crosshair}
+.panel{position:fixed;background:#1b1f2dF2;border:2px solid var(--torch);border-radius:4px;padding:20px;box-shadow:0 0 40px #000a}
+#lobby{inset:0;margin:auto;width:min(440px,92vw);height:fit-content}
+#lobby h1{margin:0 0 4px;font-size:40px;letter-spacing:.02em;color:var(--torch);font-weight:700;text-shadow:0 0 18px #e8a33d55}
+#lobby p{margin:0 0 14px;color:#cdbf9f}
+input,button{font:inherit;color:var(--bone);background:var(--stone);border:1px solid #5a5f70;border-radius:3px;padding:8px 12px}
+input{width:100%;margin-bottom:10px}
+button{cursor:pointer}button:hover{border-color:var(--torch)}button:focus-visible,input:focus-visible{outline:2px solid var(--torch);outline-offset:2px}
+button.pri{background:var(--ember);border-color:#e0664f;font-weight:700}
+button:disabled{opacity:.45;cursor:default}
+.row{display:flex;gap:8px}.row>*{flex:1}
+#st{min-height:24px;color:var(--torch);margin-top:10px}
+#help{font-size:14px;color:#a99d84;margin-top:12px}
+#shop{right:16px;top:60px;width:min(420px,92vw);max-height:calc(100% - 80px);overflow:auto}
+#shop[hidden],#lobby[hidden]{display:none}
+.tabs{display:flex;gap:6px;margin-bottom:12px}.tabs button{flex:1}.tabs .on{border-color:var(--torch);color:var(--torch)}
+.it{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #3b4054}
+.it b{display:block}.it small{color:#a99d84}.it div{flex:1}
+.note{font-size:13px;color:#a99d84;margin:0 0 10px}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="lobby" class="panel">
+ <h1>Dragonwall</h1>
+ <p>Hold the mountain keep against waves of dragons. Friends join with a four-letter room code.</p>
+ <input id="nm" maxlength="12" placeholder="Your name" aria-label="Your name">
+ <div class="row"><button class="pri" id="hb">Host a room</button><button id="sb1">Play solo</button></div>
+ <div class="row" style="margin-top:10px"><input id="rc" maxlength="4" placeholder="Room code" aria-label="Room code" style="margin:0;text-transform:uppercase"><button id="jb">Join room</button></div>
+ <div id="st" role="status"></div>
+ <div id="help">WASD move · mouse aim · click attack · right-click or Space throw spear, dagger or axe · 1–9 swap weapon · B armory and vault</div>
+</div>
+<div id="shop" class="panel" hidden></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
+<script>
+const W=1600,H=1000,M=70,PAD=150,$=id=>document.getElementById(id),cv=$('c'),cx=cv.getContext('2d');
+const cl=(v,a=-1,b=1)=>Math.max(a,Math.min(b,+v||0));
+const API='';// Your backend URL, e.g. 'https://dragonwall-api.onrender.com'. Leave empty for the free demo store.
+// ---- data ----
+const WEAPONS=[
+ {n:'Sword',m:1,d:25,cd:.4,r:62,a:1.7,p:0,c:'#d8dde6'},
+ {n:'Spear',m:1,d:30,cd:.55,r:96,a:.5,p:80,th:48,c:'#c9b48a'},
+ {n:'Dagger',m:1,d:14,cd:.2,r:46,a:1.2,p:60,th:24,c:'#e6e6e6'},
+ {n:'Battle Axe',m:1,d:40,cd:.7,r:64,a:1.9,p:150,th:52,c:'#b0b7c3'},
+ {n:'Mace',m:1,d:55,cd:.9,r:60,a:1.6,p:220,c:'#8f98a8'},
+ {n:'Warhammer',m:1,d:95,cd:1.3,r:76,a:2,p:400,c:'#7a8396'},
+ {n:'Bow',d:28,cd:.6,s:650,p:100,n1:1,c:'#b07a3c'},
+ {n:'Crossbow',d:60,cd:1.2,s:950,p:250,n1:1,c:'#8a5a2b'},
+ {n:'Longbow Volley',d:30,cd:.9,s:700,p:500,n1:3,c:'#d9a441'}];
+const PERKS=[
+ {k:'aura',n:'Dragonbane Aura',d:'+200% damage with every weapon',g:300},
+ {k:'plate',n:'Titan Plate',d:'+300 max health',g:200},
+ {k:'feather',n:'Phoenix Feather',d:'Revive once per run (each adds one)',g:150},
+ {k:'boots',n:'Gale Boots',d:'+40% move speed',g:120},
+ {k:'coin',n:'Dragon Hoard',d:'+100% gold from kills',g:250}];
+const PACKS=[[100,'0.99'],[550,'4.99'],[1200,'9.99']];
+const DT=[
+ {n:'Whelp',r:16,sp:85,bite:9,wd:30,gold:6,h0:45,hw:8,col:'#6aa84f'},
+ {n:'Drake',r:22,sp:65,rng:280,cd:2.4,fb:1,fd:14,wd:25,gold:15,h0:110,hw:16,col:'#c0392b'},
+ {n:'Wyrm',r:30,sp:55,rng:330,cd:2.8,fb:3,fd:16,wd:25,gold:40,h0:280,hw:30,col:'#7d3c98'},
+ {n:'Elder',r:46,sp:45,rng:380,cd:2,fb:8,fd:20,wd:40,gold:200,h0:1400,hw:120,col:'#e67e22'}];
+const ROOMS=[[180,180,260,180],[1160,640,260,180],[670,420,260,170]];
+function layout(){const o=[];for(const[x,y,w,h]of ROOMS){const t=16,g=64,c=x+(w-g)/2;
+ [[x,y,w,t],[x,y,t,h],[x+w-t,y,t,h],[x,y+h-t,c-x,t],[c+g,y+h-t,x+w-c-g,t]].forEach(r=>o.push({x:r[0],y:r[1],w:r[2],h:r[3],hp:400}))}return o}
+const WALLS0=layout(),COLS=['#4fa3ff','#ff6b6b','#6bff95','#ffd24f','#d46bff','#4ff0ff'];
+// ---- state ----
+let isHost=0,peer,conns=[],conn,myId,S=null,code='',G,sc=1,ox=0,oy=0,C={},NC={},shopTab=0,shopSig='',tick=0,acc=0,name='Knight';
+const keys={},mouse={x:0,y:0,f:0,t:0};
+const mh=p=>100+300*(p.pk.plate||0);
+function mkPlayer(id,n,gems){const p={id,name:(n||'Knight').slice(0,12),col:Object.keys(G.players).length%6,gems:API?0:Math.max(0,Math.min(1e6,+gems||0)),pk:{},ent:{},in:{}};resetPlayer(p);return p}
+function resetPlayer(p){p.pk={...(p.ent||{})};p.x=800+Math.random()*80-40;p.y=500+Math.random()*50-25;p.mhp=mh(p);p.hp=p.mhp;p.ang=0;p.w=0;p.own=[0];p.gold=0;p.cd=0;p.tcd=0;p.sw=0;p.alive=1}
+function newGame(){return{players:G?G.players:{},dr:[],pr:[],walls:WALLS0.map(w=>({...w})),wave:0,phase:'prep',timer:6,q:[],sp:0,id:1}}
+// ---- host simulation ----
+function push(o,r){let hit=null;for(const w of G.walls){if(w.hp<=0)continue;const qx=Math.max(w.x,Math.min(o.x,w.x+w.w)),qy=Math.max(w.y,Math.min(o.y,w.y+w.h));let dx=o.x-qx,dy=o.y-qy,d=Math.hypot(dx,dy);if(d<r){if(d<.01){dx=1;dy=0;d=1}o.x+=dx/d*(r-d);o.y+=dy/d*(r-d);hit=w}}
+ o.x=Math.max(M,Math.min(W-M,o.x));o.y=Math.max(M,Math.min(H-M,o.y));return hit}
+function hurt(p,d){if(!p.alive)return;p.hp-=d;if(p.hp<=0){if(p.pk.feather>0){p.pk.feather--;p.hp=p.mhp}else{p.alive=0;p.hp=0;if(!Object.values(G.players).some(q=>q.alive)){G.phase='over';G.timer=8}}}}
+function hit(d,dmg,oid){if(d.dead)return;d.hp-=dmg;if(d.hp<=0){d.dead=1;for(const p of Object.values(G.players))p.gold+=Math.round(DT[d.t].gold*(1+(p.pk.coin||0)))}}
+const dmul=p=>1+2*(p.pk.aura||0);
+function attack(p){const w=WEAPONS[p.w],mul=dmul(p);p.cd=w.cd;
+ if(w.m){p.sw=.18;for(const d of G.dr){const dx=d.x-p.x,dy=d.y-p.y,e=Math.hypot(dx,dy);if(e<w.r+DT[d.t].r){let df=Math.atan2(dy,dx)-p.ang;df=Math.atan2(Math.sin(df),Math.cos(df));if(Math.abs(df)<w.a/2+(e<DT[d.t].r+20?3:0))hit(d,w.d*mul,p.id)}}}
+ else for(let i=0;i<w.n1;i++){const a=p.ang+(w.n1>1?(i-1)*.14:0);G.pr.push({k:0,x:p.x,y:p.y,vx:Math.cos(a)*w.s,vy:Math.sin(a)*w.s,d:w.d*mul,o:p.id,l:1.4})}}
+function throwIt(p){const w=WEAPONS[p.w];if(!w.th)return;p.tcd=1.4;G.pr.push({k:1,x:p.x,y:p.y,vx:Math.cos(p.ang)*640,vy:Math.sin(p.ang)*640,d:w.th*dmul(p),o:p.id,l:.8,w:p.w})}
+function spawn(t){const T=DT[t],s=Math.random()*4|0,a=Math.random();let x=M+a*(W-2*M),y=M+2;if(s==1)y=H-M-2;if(s>1){x=s==2?M+2:W-M-2;y=M+a*(H-2*M)}
+ const hp=T.h0+T.hw*G.wave;G.dr.push({id:G.id++,t,x,y,hp,mhp:hp,ang:0,cd:1})}
+function startWave(){const g=G;g.wave++;const n=3+2*g.wave;g.q=[];for(let i=0;i<n;i++){let t=0;if(g.wave>=2&&i%3==2)t=1;if(g.wave>=5&&i%6==5)t=2;g.q.push(t)}if(g.wave%5==0)g.q.push(3);g.sp=0;g.phase='fight'}
+function step(dt){const g=G,P=Object.values(g.players);
+ if(g.phase==='prep'){if((g.timer-=dt)<=0)startWave()}
+ else if(g.phase==='fight'){if(g.q.length&&(g.sp-=dt)<=0){spawn(g.q.shift());g.sp=g.wave>8?.6:1.1}
+  if(!g.q.length&&!g.dr.length){g.phase='prep';g.timer=14;P.forEach(p=>{p.alive=1;p.hp=p.mhp;p.gold+=Math.round(20*g.wave*(1+(p.pk.coin||0)))})}}
+ else if((g.timer-=dt)<=0){const keep=G.players;G=newGame();G.players=keep;Object.values(keep).forEach(resetPlayer)}
+ for(const p of P){p.cd-=dt;p.tcd-=dt;p.sw-=dt;if(!p.alive)continue;const i=p.in||{};let dx=cl(i.x),dy=cl(i.y),l=Math.hypot(dx,dy)||1;const sp=190*(1+.4*Math.min(3,p.pk.boots||0));
+  p.x+=dx/l*sp*dt;p.y+=dy/l*sp*dt;p.ang=+i.a||0;push(p,14);
+  if(i.f&&p.cd<=0&&g.phase!=='over')attack(p);if(i.t&&p.tcd<=0)throwIt(p)}
+ for(const d of g.dr){let tg=null,bd=1e9;for(const p of P)if(p.alive){const e=Math.hypot(p.x-d.x,p.y-d.y);if(e<bd){bd=e;tg=p}}
+  if(!tg)continue;const T=DT[d.t];d.ang=Math.atan2(tg.y-d.y,tg.x-d.x);d.cd-=dt;const stand=T.rng&&bd<T.rng;
+  if(!stand){d.x+=Math.cos(d.ang)*T.sp*dt;d.y+=Math.sin(d.ang)*T.sp*dt}
+  const w=push(d,T.r);if(w&&!stand)w.hp-=T.wd*dt;
+  if(T.rng){if(bd<T.rng+80&&d.cd<=0){d.cd=T.cd;for(let i=0;i<T.fb;i++){const a=T.fb>=8?i*Math.PI*2/T.fb:d.ang+(i-(T.fb-1)/2)*.22;g.pr.push({k:2,x:d.x,y:d.y,vx:Math.cos(a)*260,vy:Math.sin(a)*260,d:T.fd,l:3})}}}
+  else if(bd<T.r+16&&d.cd<=0){d.cd=.8;hurt(tg,T.bite)}}
+ g.pr=g.pr.filter(r=>{r.x+=r.vx*dt;r.y+=r.vy*dt;if((r.l-=dt)<=0||r.x<M||r.x>W-M||r.y<M||r.y>H-M)return 0;
+  const w=g.walls.find(w=>w.hp>0&&r.x>w.x&&r.x<w.x+w.w&&r.y>w.y&&r.y<w.y+w.h);if(w){if(r.k===2)w.hp-=r.d*3;return 0}
+  if(r.k===2){for(const p of P)if(p.alive&&Math.hypot(p.x-r.x,p.y-r.y)<18){hurt(p,r.d);return 0}}
+  else for(const d of g.dr)if(!d.dead&&Math.hypot(d.x-r.x,d.y-r.y)<DT[d.t].r+5){hit(d,r.d,r.o);return 0}
+  return 1});
+ g.dr=g.dr.filter(d=>!d.dead)}
+function act(id,m){const p=G.players[id];if(!p||!m)return;
+ if(m.in)p.in=m.in;
+ if(m.sel!=null&&p.own.includes(m.sel))p.w=m.sel;
+ if(m.buy!=null){const w=WEAPONS[m.buy];if(w&&!p.own.includes(m.buy)&&p.gold>=w.p){p.gold-=w.p;p.own.push(m.buy);p.w=m.buy}}
+ if(!API&&m.perk!=null){const k=PERKS[m.perk];if(k&&p.gems>=k.g){p.gems-=k.g;grant(p,{[k.k]:(p.ent[k.k]||0)+1})}}
+ if(!API&&m.pack!=null&&PACKS[m.pack])p.gems+=PACKS[m.pack][0];
+ if(API&&m.ent)verifyEnt(id,m.ent)}
+function grant(p,perks){for(const k of PERKS){const v=Math.min(10,Math.max(0,perks[k.k]|0)),d=v-(p.ent[k.k]||0);if(d>0){p.ent[k.k]=v;p.pk[k.k]=(p.pk[k.k]||0)+d;if(k.k==='plate'){p.mhp=mh(p);p.hp+=300*d}}}}
+async function verifyEnt(id,blob){try{const r=await fetch(API+'/api/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ent:String(blob).slice(0,600)})});if(!r.ok)return;const j=await r.json(),p=G&&G.players[id];if(p&&j.perks)grant(p,j.perks)}catch(e){}}
+function snap(){return{w:G.wave,ph:G.phase,tm:Math.ceil(G.timer),qn:G.q.length,wh:G.walls.map(w=>Math.max(0,w.hp|0)),
+ p:Object.values(G.players).map(p=>({id:p.id,n:p.name,x:p.x|0,y:p.y|0,a:+p.ang.toFixed(2),h:p.hp|0,m:p.mhp,w:p.w,al:p.alive,sw:p.sw>0?1:0,c:p.col,g:p.gold|0,gm:p.gems,o:p.own,pk:p.pk})),
+ d:G.dr.map(d=>[d.id,d.t,d.x|0,d.y|0,d.hp|0,d.mhp,+d.ang.toFixed(2)]),
+ r:G.pr.map(r=>[r.k,r.x|0,r.y|0,+Math.atan2(r.vy,r.vx).toFixed(2),r.w||0])}}
+// ---- networking (PeerJS: host is authoritative, GitHub Pages friendly) ----
+const say=t=>$('st').textContent=t;
+function begin(){$('lobby').hidden=true}
+function send(m){if(isHost)act('H',m);else if(conn&&conn.open)conn.send(m)}
+function startHost(solo){name=$('nm').value.trim()||'Knight';isHost=1;myId='H';G=null;G=newGame();G.players.H=mkPlayer('H',name,ls('dw_gems'));if(API&&wallet.ent)verifyEnt('H',wallet.ent);
+ if(solo){begin();return}
+ code=Math.random().toString(36).replace(/[^a-z]/g,'').slice(0,4).toUpperCase().padEnd(4,'X');say('Opening room…');
+ peer=new Peer('dragonwall-'+code);
+ peer.on('open',()=>{begin()});
+ peer.on('error',e=>{say(e.type==='unavailable-id'?'Room code clash. Press Host again.':'Could not reach the matchmaking server. Check your connection.');if(!S)isHost=0});
+ peer.on('connection',c=>{conns.push(c);c.on('data',m=>{if(m&&m.hello&&!G.players[c.peer]){G.players[c.peer]=mkPlayer(c.peer,String(m.n||''),m.gm);if(API&&m.ent)verifyEnt(c.peer,m.ent)}else act(c.peer,m)});
+  c.on('close',()=>{delete G.players[c.peer];conns=conns.filter(x=>x!==c)})})}
+function join(){name=$('nm').value.trim()||'Knight';const rc=$('rc').value.trim().toUpperCase();if(rc.length!==4){say('Enter the four-letter room code.');return}
+ say('Joining…');peer=new Peer();myId=null;
+ peer.on('error',e=>say(e.type==='peer-unavailable'?'No room with that code.':'Connection problem. Try again.'));
+ peer.on('open',id=>{myId=id;conn=peer.connect('dragonwall-'+rc);
+  conn.on('open',()=>{conn.send({hello:1,n:name,gm:API?0:ls('dw_gems'),ent:wallet.ent});code=rc;begin()});
+  conn.on('data',m=>{S=m});
+  conn.on('close',()=>{$('lobby').hidden=false;say('The host left. Reload to start again.')})})}
+function ls(k,v){try{if(v==null)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){}}
+// ---- accounts and payments (active only when API is set) ----
+let wallet={gems:0,perks:{},ent:null},msg='',busy=0,poll=0;
+async function api(path,body){const a=ls('dw_acct');const r=await fetch(API+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json',...(a?{Authorization:'Bearer '+a}:{})},body:body?JSON.stringify(body):undefined});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||'Request failed');return j}
+async function initAccount(){if(!API||wallet.ent)return;try{if(!ls('dw_acct'))ls('dw_acct',(await api('/api/account',{})).token);await refreshWallet()}catch(e){say('The store is offline. You can still play.')}}
+async function refreshWallet(){if(!API||!ls('dw_acct'))return;try{const j=await api('/api/me'),ch=JSON.stringify(j.perks)!==JSON.stringify(wallet.perks);wallet={gems:j.gems,perks:j.perks,ent:j.ent};if(ch&&S)send({ent:j.ent})}catch(e){}}
+async function checkout(i){if(busy)return;busy=1;msg='Opening checkout…';shopSig='';const tab=window.open('','_blank');try{const j=await api('/api/checkout',{pack:i});if(tab)tab.location=j.url;else location.href=j.url;msg='Finish paying in the new tab. Your gems appear here automatically.';poll=40}catch(e){if(tab)tab.close();msg=e.message}busy=0;shopSig=''}
+async function buyPerk(i){if(busy)return;busy=1;try{const j=await api('/api/spend',{perk:PERKS[i].k});wallet={gems:j.gems,perks:j.perks,ent:j.ent};send({ent:j.ent});msg=''}catch(e){msg=e.message}busy=0;shopSig=''}
+setInterval(()=>{if(poll>0){poll--;refreshWallet()}},3000);addEventListener('focus',refreshWallet);
+$('hb').onclick=async()=>{await initAccount();startHost(0)};$('sb1').onclick=async()=>{await initAccount();startHost(1)};$('jb').onclick=async()=>{await initAccount();join()};
+// ---- input ----
+addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;keys[e.code]=1;
+ if(/^Digit[1-9]$/.test(e.code))send({sel:+e.code[5]-1});if(e.code==='KeyB')toggleShop();if(e.code==='Space')e.preventDefault()});
+addEventListener('keyup',e=>keys[e.code]=0);
+cv.addEventListener('mousedown',e=>{if(e.button===0)mouse.f=1;else mouse.t=1});
+addEventListener('mouseup',e=>{if(e.button===0)mouse.f=0;else mouse.t=0});
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+addEventListener('mousemove',e=>{mouse.x=(e.clientX-ox)/sc;mouse.y=(e.clientY-oy)/sc});
+function toggleShop(){const s=$('shop');s.hidden=!s.hidden;shopSig='';}
+$('shop').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const d=b.dataset;
+ if(d.t!=null){shopTab=+d.t;shopSig=''}
+ else if(d.buy!=null)send({buy:+d.buy});else if(d.sel!=null)send({sel:+d.sel});
+ else if(d.perk!=null)API?buyPerk(+d.perk):send({perk:+d.perk});
+ else if(d.pack!=null){if(API)checkout(+d.pack);else if(confirm('Demo checkout: no real payment is taken. Add '+PACKS[d.pack][0]+' gems for free?'))send({pack:+d.pack})}});
+function renderShop(m0){const me={...m0};if(API){me.gm=wallet.gems;me.pk=wallet.perks}const sig=[shopTab,me.g,me.gm,me.o.join(),me.w,JSON.stringify(me.pk),msg].join('|');if(sig===shopSig||$('shop').hidden)return;shopSig=sig;
+ let h=`<div class="tabs"><button data-t="0" class="${shopTab?'':'on'}">Armory · ${me.g} gold</button><button data-t="1" class="${shopTab?'on':''}">Dragon Vault · ${me.gm} gems</button></div>`;
+ if(!shopTab)WEAPONS.forEach((w,i)=>{const own=me.o.includes(i),st=w.m?`melee · ${w.d} dmg`:`ranged · ${w.d} dmg${w.n1>1?' ×3':''}`+(w.th?'':'');
+  h+=`<div class="it"><div><b>${w.n}</b><small>${st}${w.th?` · throw ${w.th}`:''}</small></div>`+(own?`<button data-sel="${i}" ${me.w===i?'disabled':''}>${me.w===i?'Equipped':'Equip'}</button>`:`<button data-buy="${i}" ${me.g<w.p?'disabled':''}>${w.p} gold</button>`)+`</div>`});
+ else{h+='<p class="note">'+(API?(msg||'Payments are handled by Stripe. Gems reach this browser\'s account once the payment clears.'):'Demo store: gem packs are free and no payment is taken.')+'</p>';
+  PACKS.forEach((p,i)=>h+=`<div class="it"><div><b>${p[0]} gems</b><small>$${p[1]}${API?'':' (demo price)'}</small></div><button data-pack="${i}">Buy</button></div>`);
+  PERKS.forEach((k,i)=>h+=`<div class="it"><div><b>${k.n}${me.pk[k.k]?' ×'+me.pk[k.k]:''}</b><small>${k.d}</small></div><button data-perk="${i}" ${me.gm<k.g?'disabled':''}>${k.g} gems</button></div>`)}
+ $('shop').innerHTML=h}
+// ---- rendering ----
+const BG=document.createElement('canvas');BG.width=W+2*PAD;BG.height=H+2*PAD;
+(()=>{const b=BG.getContext('2d'),T=W+2*PAD,V=H+2*PAD;let s=7;const rnd=()=>(s=s*16807%2147483647)/2147483647;
+ const g=b.createLinearGradient(0,0,0,V);g.addColorStop(0,'#1b2038');g.addColorStop(1,'#4a3646');b.fillStyle=g;b.fillRect(0,0,T,V);
+ for(let i=0;i<16;i++){const x=i*T/15,y=V*(.45+rnd()*.35),w=260+rnd()*140;b.fillStyle=i%2?'#232843':'#2c3050';b.beginPath();b.moveTo(x-w,V);b.lineTo(x,y);b.lineTo(x+w,V);b.fill();
+  b.fillStyle='#d9dcee66';b.beginPath();b.moveTo(x,y);b.lineTo(x-w*.14,y+w*.2);b.lineTo(x+w*.14,y+w*.2);b.fill()}
+ b.fillStyle='#1a1d30';b.fillRect(PAD-30,PAD-30,W+60,H+60);
+ b.fillStyle='#6d6558';b.fillRect(PAD,PAD,W,H);b.fillStyle='#8a8070';
+ for(let x=0;x<W;x+=40){b.fillRect(PAD+x+6,PAD-10,26,12);b.fillRect(PAD+x+6,PAD+H-2,26,12)}for(let y=0;y<H;y+=40){b.fillRect(PAD-10,PAD+y+6,12,26);b.fillRect(PAD+W-2,PAD+y+6,12,26)}
+ for(let x=M;x<W-M;x+=50)for(let y=M;y<H-M;y+=50){b.fillStyle=((x+y)/50)%2?'#4f4b46':'#58534c';b.fillRect(PAD+x,PAD+y,50,50)}
+ b.fillStyle='#6b4f3a';for(const[x,y,w,h]of ROOMS)b.fillRect(PAD+x,PAD+y,w,h);
+ b.fillStyle='#e8a33d33';[[M+20,M+20],[W-M-20,M+20],[M+20,H-M-20],[W-M-20,H-M-20]].forEach(([x,y])=>{b.beginPath();b.arc(PAD+x,PAD+y,60,0,7);b.fill()})})();
+function sm(k,x,y,dt){let o=C[k];if(!o)o={x,y};else{const f=1-Math.exp(-18*dt);o={x:o.x+(x-o.x)*f,y:o.y+(y-o.y)*f}}NC[k]=o;return o}
+function bar(x,y,w,r,col){cx.fillStyle='#000a';cx.fillRect(x,y,w,6);cx.fillStyle=col;cx.fillRect(x,y,w*Math.max(0,r),6)}
+function draw(dt){const w=innerWidth,h=innerHeight;if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h}
+ sc=Math.min(w/W,h/H);ox=(w-W*sc)/2;oy=(h-H*sc)/2;cx.setTransform(1,0,0,1,0,0);cx.clearRect(0,0,w,h);
+ cx.setTransform(sc,0,0,sc,ox,oy);cx.drawImage(BG,-PAD,-PAD);
+ S.wh.forEach((hp,i)=>{if(hp<=0)return;const r=WALLS0[i];cx.fillStyle=`hsl(30 14% ${22+28*hp/400}%)`;cx.fillRect(r.x,r.y,r.w,r.h);cx.strokeStyle='#14110f';cx.lineWidth=2;cx.strokeRect(r.x,r.y,r.w,r.h)});
+ const now=performance.now()/1000;
+ for(const d of S.d){const o=sm('d'+d[0],d[2],d[3],dt),T=DT[d[1]],r=T.r;cx.save();cx.translate(o.x,o.y);cx.rotate(d[6]);
+  cx.fillStyle=T.col;cx.globalAlpha=.8;for(const sg of[-1,1]){cx.beginPath();cx.moveTo(-r*.2,sg*r*.4);cx.lineTo(-r*1.1,sg*r*1.7);cx.lineTo(r*.5,sg*r*.8);cx.fill()}cx.globalAlpha=1;
+  cx.beginPath();cx.ellipse(0,0,r*1.2,r*.8,0,0,7);cx.fill();cx.fillRect(-r*2,-r*.12,r*1,r*.24);
+  cx.beginPath();cx.arc(r*1.1,0,r*.5,0,7);cx.fill();cx.fillStyle='#ffe27a';cx.fillRect(r*1.25,-r*.3,r*.15,r*.15);cx.fillRect(r*1.25,r*.15,r*.15,r*.15);cx.restore();
+  bar(o.x-r,o.y-r*1.5-8,r*2,d[4]/d[5],'#e0503a')}
+ for(const r of S.r){cx.save();cx.translate(r[1],r[2]);cx.rotate(r[3]);
+  if(r[0]===2){const g=cx.createRadialGradient(0,0,2,0,0,14);g.addColorStop(0,'#fff3b0');g.addColorStop(.5,'#ff8a1f');g.addColorStop(1,'#ff4a0000');cx.fillStyle=g;cx.beginPath();cx.arc(0,0,14,0,7);cx.fill()}
+  else{if(r[0]===1)cx.rotate(now*18);cx.strokeStyle=r[0]?WEAPONS[r[4]].c:'#d9c9a0';cx.lineWidth=r[0]?4:2.5;cx.beginPath();cx.moveTo(-10,0);cx.lineTo(10,0);cx.stroke();cx.fillStyle='#ddd';cx.beginPath();cx.moveTo(10,-4);cx.lineTo(16,0);cx.lineTo(10,4);cx.fill()}cx.restore()}
+ let me=null;cx.textAlign='center';cx.font='bold 13px Georgia';
+ for(const p of S.p){const o=sm('p'+p.id,p.x,p.y,dt),W0=WEAPONS[p.w];if(p.id===myId)me=p;cx.save();cx.translate(o.x,o.y);cx.globalAlpha=p.al?1:.35;
+  if(p.sw&&W0.m){cx.fillStyle='#ffffff55';cx.beginPath();cx.moveTo(0,0);cx.arc(0,0,W0.r,p.a-W0.a/2,p.a+W0.a/2);cx.fill()}
+  cx.fillStyle=COLS[p.c%6];cx.strokeStyle='#14110f';cx.lineWidth=3;cx.beginPath();cx.arc(0,0,14,0,7);cx.fill();cx.stroke();
+  cx.rotate(p.a);cx.strokeStyle=W0.c;cx.lineWidth=W0.m?5:3;cx.beginPath();cx.moveTo(8,0);cx.lineTo(W0.m?Math.min(W0.r-10,40):30,0);cx.stroke();cx.restore();
+  cx.fillStyle='#f0e6d0';cx.fillText(p.n+(p.al?'':' (down)'),o.x,o.y-34);if(p.al)bar(o.x-18,o.y-28,36,p.h/p.m,'#6bff95')}
+ NC.__=1;C=NC;NC={};
+ cx.setTransform(1,0,0,1,0,0);cx.textAlign='left';cx.font='bold 22px Georgia';cx.fillStyle='#e8a33d';cx.fillText('Wave '+S.w,16,32);
+ cx.font='15px Georgia';cx.fillStyle='#f0e6d0';cx.fillText((isHost?(code?'Room code: '+code:'Solo'):'Room '+code)+'  ·  B opens the armory',16,54);
+ let bn='';if(S.ph==='prep')bn=`Wave ${S.w+1} arrives in ${S.tm}s`;else if(S.ph==='over')bn=`The keep has fallen. Rebuilding in ${S.tm}s`;else bn=`${S.d.length+S.qn} dragons remain`;
+ cx.textAlign='center';cx.font='bold 24px Georgia';cx.fillStyle=S.ph==='over'?'#ff7a5c':'#f0e6d0';cx.fillText(bn,w/2,36);
+ let y=80;cx.textAlign='left';cx.font='13px Georgia';for(const p of S.p){cx.fillStyle=COLS[p.c%6];cx.fillText(p.n,16,y);bar(90,y-9,70,p.h/p.m,COLS[p.c%6]);y+=20}
+ if(me){cx.textAlign='right';cx.font='bold 18px Georgia';cx.fillStyle='#e8a33d';cx.fillText(me.g+' gold',w-16,32);cx.fillStyle='#8fd6ff';cx.fillText((API?wallet.gems:me.gm)+' gems',w-16,56);
+  const bw=56,x0=w/2-bw*4.5,yb=h-70;bar(w/2-160,yb-22,320,me.h/me.m,me.al?'#6bff95':'#555');
+  cx.textAlign='center';for(let i=0;i<9;i++){const own=me.o.includes(i);cx.fillStyle=own?'#2a2f3fee':'#14161fcc';cx.fillRect(x0+i*bw,yb,bw-4,56);cx.strokeStyle=me.w===i?'#e8a33d':'#5a5f70';cx.lineWidth=me.w===i?3:1;cx.strokeRect(x0+i*bw,yb,bw-4,56);
+   cx.fillStyle=own?'#f0e6d0':'#6a6f80';cx.font='bold 11px Georgia';cx.fillText(WEAPONS[i].n.split(' ')[0],x0+i*bw+bw/2-2,yb+30);cx.font='11px Georgia';cx.fillStyle='#a99d84';cx.fillText(i+1,x0+i*bw+10,yb+14)}
+  if(!API)ls('dw_gems',me.gm);renderShop(me)}
+ return me}
+function loop(t){const dt=Math.min(.05,(t-(loop.l||t))/1000);loop.l=t;
+ if(isHost&&G&&$('lobby').hidden){const me=G.players.H,o=C['pH']||me;
+  me.in={x:(keys.KeyD?1:0)-(keys.KeyA?1:0),y:(keys.KeyS?1:0)-(keys.KeyW?1:0),a:Math.atan2(mouse.y-o.y,mouse.x-o.x),f:mouse.f,t:mouse.t||keys.Space};
+  step(dt);acc+=dt;if(acc>.05||!S){acc=0;S=snap();for(const c of conns)if(c.open)c.send(S)}}
+ else if(!isHost&&S&&conn&&conn.open&&$('lobby').hidden){const o=C['p'+myId]||{x:800,y:500};
+  if((tick+=dt)>.05){tick=0;conn.send({in:{x:(keys.KeyD?1:0)-(keys.KeyA?1:0),y:(keys.KeyS?1:0)-(keys.KeyW?1:0),a:Math.atan2(mouse.y-o.y,mouse.x-o.x),f:mouse.f,t:mouse.t||keys.Space?1:0}})}}
+ if(S&&$('lobby').hidden)draw(dt);requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+</script></body></html>
